@@ -81,6 +81,8 @@ class HTTPMessageSigner(HTTPSignatureHandler):
         label: str = None,
         include_alg: bool = True,
         covered_component_ids: Sequence[str] = ("@method", "@authority", "@target-uri"),
+        sig_input_hdr: str = "Signature-Input",
+        sig_hdr: str = "Signature",
     ):
         # TODO: Accept-Signature autonegotiation
         key = self.key_resolver.resolve_private_key(key_id)
@@ -105,9 +107,9 @@ class HTTPMessageSigner(HTTPSignatureHandler):
         if label is not None:
             sig_label = label
         sig_input_node = http_sfv.Dictionary({sig_label: sig_params_node})
-        message.headers["Signature-Input"] = str(sig_input_node)
+        message.headers[sig_input_hdr] = str(sig_input_node)
         sig_node = http_sfv.Dictionary({sig_label: signature})
-        message.headers["Signature"] = str(sig_node)
+        message.headers[sig_hdr] = str(sig_node)
 
 
 class HTTPMessageVerifier(HTTPSignatureHandler):
@@ -145,12 +147,20 @@ class HTTPMessageVerifier(HTTPSignatureHandler):
             if self._parse_integer_timestamp(sig_input.params["created"], field_name="created") + max_age < now:
                 raise InvalidSignature(f"Signature age exceeds maximum allowable age {max_age}")
 
-    def verify(self, message, *, max_age: datetime.timedelta = datetime.timedelta(days=1)) -> List[VerifyResult]:
-        sig_inputs = self._parse_dict_header("Signature-Input", message.headers)
+    def verify(
+        self,
+        message,
+        *,
+        max_age: datetime.timedelta = datetime.timedelta(days=1),
+        sig_hdr: str,
+        sig_input_hdr: str,
+        keyid: str,
+    ) -> List[VerifyResult]:
+        sig_inputs = self._parse_dict_header(sig_input_hdr, message.headers)
         if len(sig_inputs) != 1:
             # TODO: validate all behaviors with multiple signatures
             raise InvalidSignature("Multiple signatures are not supported")
-        signature = self._parse_dict_header("Signature", message.headers)
+        signature = self._parse_dict_header(sig_hdr, message.headers)
         verify_results = []
         for label, sig_input in sig_inputs.items():
             self.validate_created_and_expires(sig_input, max_age=max_age)
@@ -159,7 +169,7 @@ class HTTPMessageVerifier(HTTPSignatureHandler):
             if "alg" in sig_input.params:
                 if sig_input.params["alg"] != self.signature_algorithm.algorithm_id:
                     raise InvalidSignature("Unexpected algorithm specified in the signature")
-            key = self.key_resolver.resolve_public_key(sig_input.params["keyid"])
+            key = self.key_resolver.resolve_public_key(keyid)
             for param in sig_input.params:
                 if param not in self.signature_metadata_parameters:
                     raise InvalidSignature(f'Unexpected signature metadata parameter "{param}"')
